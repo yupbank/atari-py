@@ -1,0 +1,3 @@
+[submodule "atari_py/Arcade-Learning-Environment"]
+	path = atari_py/Arcade-Learning-Environment
+	url = https://github.com/mgbellemare/Arcade-Learning-Environment.git
