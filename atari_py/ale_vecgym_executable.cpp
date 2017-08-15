@@ -28,47 +28,66 @@ const int FULL_PICTURE_BYTES  = 210*160; // AKA 2H*2W
 static int fd_p2c_r;
 static int fd_c2p_w;
 
-void resize_05x_grayscale(uint8_t* dst, uint8_t* src, int H, int W)
-{
-	for (int y=0; y<H; y++) {
-		for (int x=0; x<W; x++) {
-			dst[y*W+x] =
-				(src[(y+0)*2*W + 2*(x+0)] >> 2) +
-				(src[(y+0)*2*W + 2*(x+1)] >> 2) +
-				(src[(y+1)*2*W + 2*(x+0)] >> 2) +
-				(src[(y+1)*2*W + 2*(x+1)] >> 2);
-		}
-	}
-}
+struct FrameStacking {
+	std::vector<uint8_t> rot;
+	std::vector<uint8_t> small1;
+	std::vector<uint8_t> small2;
+	uint8_t grayscale_palette[256];
 
-void resize_05x_grayscale_two_sources(uint8_t* dst, uint8_t* src1, uint8_t* src2, int H, int W)
-{
-	for (int y=0; y<H; y++) {
-		for (int x=0; x<W; x++) {
-			uint8_t v1 =
-				(src1[(y+0)*2*W + 2*(x+0)] >> 2) +
-				(src1[(y+0)*2*W + 2*(x+1)] >> 2) +
-				(src1[(y+1)*2*W + 2*(x+0)] >> 2) +
-				(src1[(y+1)*2*W + 2*(x+1)] >> 2);
-			uint8_t v2 =
-				(src2[(y+0)*2*W + 2*(x+0)] >> 2) +
-				(src2[(y+0)*2*W + 2*(x+1)] >> 2) +
-				(src2[(y+1)*2*W + 2*(x+0)] >> 2) +
-				(src2[(y+1)*2*W + 2*(x+1)] >> 2);
-			dst[y*W+x] = std::max(v1, v2); // TODO: use some crazy http://www.geeksforgeeks.org/compute-the-minimum-or-maximum-max-of-two-integers-without-branching/
+	void init(ALEInterface* ale)
+	{
+		rot.resize(W*H*STACK);
+		small1.resize(W*H);
+		small2.resize(W*H);
+		ColourPalette& pal = ale->theOSystem->colourPalette();
+		uint8_t buf123[256];
+		for (int c=0; c<256; c++) buf123[c] = c;
+		uint8_t rgb[256*3];
+		pal.applyPaletteRGB(rgb, buf123, 256);
+		for (int c=0; c<256; c++) {
+			float gray = 0.299f*rgb[3*c+0] + 0.587f*rgb[3*c+1] + 0.114f*rgb[3*c+2];
+			grayscale_palette[c] = uint8_t(gray) >> 2; // 25% intensity, not 100%
 		}
 	}
-}
+
+	void render_small(ALEInterface* ale, uint8_t* dst)
+	{
+		uint8_t* indexed = ale->getScreen().getArray();
+		for (int y=0; y<H; y++) {
+			for (int x=0; x<W; x++) {
+				dst[y*W+x] =
+					(grayscale_palette[indexed[(y+0)*2*W + 2*(x+0)]]) +
+					(grayscale_palette[indexed[(y+0)*2*W + 2*(x+1)]]) +
+					(grayscale_palette[indexed[(y+1)*2*W + 2*(x+0)]]) +
+					(grayscale_palette[indexed[(y+1)*2*W + 2*(x+1)]]);
+			}
+		}
+	}
+
+	void rotate_and_max_two_small()
+	{
+		memmove(rot.data()+1, rot.data(), rot.size()-1);
+		for (int c=0; c<H*W; c++)
+			rot[STACK*c] = std::max(small1[c], small2[c]);
+	}
+
+	void fill_with_small1()
+	{
+		for (int c=0; c<H*W; c++)
+			for (int s=0; s<STACK; s++)
+				rot[STACK*c + s] = small1[c];
+	}
+};
 
 std::string stdprintf(const char* fmt, ...)
 {
-        char buf[32768];
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, ap);
-        va_end(ap);
-        buf[32768-1] = 0;
-        return buf;
+	char buf[32768];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	buf[32768-1] = 0;
+	return buf;
 }
 
 double time()
@@ -79,8 +98,7 @@ double time()
 }
 
 struct UsefulData {
-	std::vector< std::vector<uint8_t> > picture_stack;
-	int picture_rot;
+	FrameStacking picture_stack;
 	int lives;
 	int frame;
 	int score;
@@ -143,23 +161,22 @@ void main_loop()
 {
 	char buf[1024];
 	snprintf(buf, sizeof(buf), "%i", cpu);
-        FILE* monitor_js = fopen((monitor_dir + stdprintf("/%03i.monitor.json", cpu)).c_str(), "wt");
-        double t0 = time();
-        fprintf(monitor_js, "{\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
-        fflush(monitor_js);
+	FILE* monitor_js = fopen((monitor_dir + stdprintf("/%03i.monitor.json", cpu)).c_str(), "wt");
+	double t0 = time();
+	fprintf(monitor_js, "{\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
+	fflush(monitor_js);
 
 	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*STEPS*H*W*STACK);
-        MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH*STEPS);
-        MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH*STEPS);
-        MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH*STEPS);
-        MemMap<int32_t> buf_step(prefix+"_step", LUMP*NCPU*BUNCH*STEPS);
-        MemMap<float>   buf_scor(prefix+"_scor", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<int32_t> buf_step(prefix+"_step", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<float>   buf_scor(prefix+"_scor", LUMP*NCPU*BUNCH*STEPS);
 
-        MemMap<uint8_t> last_obs0(prefix+"_xlast_obs0", LUMP*NCPU*BUNCH*1*H*W*STACK);
-        MemMap<float>   last_rews(prefix+"_xlast_rews", LUMP*NCPU*BUNCH*1);
-        MemMap<bool>    last_news(prefix+"_xlast_news", LUMP*NCPU*BUNCH*1);
-        MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH*1);
-        MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH*1);
+	MemMap<uint8_t> last_obs0(prefix+"_xlast_obs0", LUMP*NCPU*BUNCH*1*H*W*STACK);
+	MemMap<bool>    last_news(prefix+"_xlast_news", LUMP*NCPU*BUNCH*1);
+	MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH*1);
+	MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH*1);
 
 	std::vector<std::vector<ALEInterface*> > lumps;
 	std::vector<std::vector<UsefulData> > lumps_useful;
@@ -180,21 +197,11 @@ void main_loop()
 			data.frame = 0;
 			data.score = 0;
 			data.lives = emu->lives();
-			for (int s=0; s<STACK; s++)
-				data.picture_stack.push_back(std::vector<uint8_t>(W*H));
-			emu->getScreenGrayscale(full_res_buf1);
-			resize_05x_grayscale(data.picture_stack[0].data(), full_res_buf1.data(), H, W);
-			for (int s=1; s<STACK; s++) {
-				memcpy(data.picture_stack[s].data(), data.picture_stack[0].data(), W*H);
-				memcpy(buf_obs0.at(l,b,cursor) + s*W*H, data.picture_stack[0].data(), W*H);
-			}
-			data.picture_rot = 0;
+			data.picture_stack.init(emu);
+			data.picture_stack.render_small(emu, data.picture_stack.small1.data());
+			data.picture_stack.fill_with_small1();
 			bunch.push_back(emu);
 			bunch_useful.push_back(data);
-			buf_rews.at(l,b,cursor)[0] = 0;
-			buf_news.at(l,b,cursor)[0] = true;
-			buf_step.at(l,b,cursor)[0] = 0;
-			buf_scor.at(l,b,cursor)[0] = 0;
 		}
 		lumps.push_back(bunch);
 		lumps_useful.push_back(bunch_useful);
@@ -202,19 +209,38 @@ void main_loop()
 
 	ssize_t r0 = write(fd_c2p_w, "R", 1);
 	assert(r0==1); // pipe must block until it can write, not return errors.
-	for (int l=0; l<LUMP; l++) {
-		char buf[1];
-		buf[0] = 'a' + l;
-		ssize_t r0 = write(fd_c2p_w, buf, 1);
-		assert(r0==1);
+
+	char cmd[2];
+	ssize_t r1 = read(fd_p2c_r, cmd, 1);
+	if (r1 != 1) {
+		fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (1)\n", cpu);
+		return;
 	}
-        cursor += 1;
-        bool quit = false;
-        while (!quit) {
-		bool last = cursor==STEPS;
+	assert(cmd[0]=='0' && "First command must be goto_buffer_beginning()");
+
+	bool quit = false;
+	while (!quit) {
+		assert(cursor==0);
 		for (int l=0; l<LUMP; l++) {
-			std::vector<ALEInterface*>& bunch = lumps[l];
 			std::vector<UsefulData>& bunch_useful = lumps_useful[l];
+			for (int b=0; b<BUNCH; b++) {
+				UsefulData& data = bunch_useful[b];
+				memcpy(buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
+				buf_news.at(l,b,cursor)[0] = true;
+				buf_step.at(l,b,cursor)[0] = data.frame;
+				buf_scor.at(l,b,cursor)[0] = data.score;
+			}
+			char buf[1];
+			buf[0] = 'a' + l;
+			ssize_t r2 = write(fd_c2p_w, buf, 1);
+			if (r2 != 1) {
+				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (2)\n", cpu);
+				return;
+			}
+		}
+
+		int l = 0;
+		while (!quit) {
 			char cmd[2];
 			//printf(" * * * * cpu%i rcv!\n", cpu);
 			ssize_t r1 = read(fd_p2c_r, cmd, 1);
@@ -223,21 +249,33 @@ void main_loop()
 				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (1)\n", cpu);
 				return;
 			}
-			if (cmd[0]=='Q') return; // quit, but silently
-			if (cmd[0] >= 'A' && cmd[0] <= 'H') { // 'H' is 8 lumps supported (ABCDEFGH)
-				cursor = 0;
-				assert(cmd[0]=='A' && "you have synchronization problems"); // but actually, it only makes sense to send 'A' there
-			} else if (cmd[0] >= 'a' && cmd[0] <= 'h') {
+			if (cmd[0]=='Q') {
+				quit = true;
+				break;
+			}
+			//if (cmd[0] >= 'A' && cmd[0] <= 'H') { // 'H' is 8 lumps supported (ABCDEFGH)
+			//	cursor = 0;
+			//assert(cmd[0]=='A' && "you have synchronization problems"); // but actually, it only makes sense to send 'A' there
+			if (cmd[0] >= 'a' && cmd[0] <= 'h') {
 				assert(cmd[0]==char(97+l) && "you have synchronization problems");
+			} else if (cmd[0] == '0') {
+				cursor = 0;
+				break;
 			} else {
 				fprintf(stderr, "ale_vecgym_executable cpu%02i something strange visible in a pipe: '%c', let's quit just in case...\n", cpu, cmd[0]);
-				return;
+				quit = true;
+				break;
 			}
-	                assert(cursor < STEPS || last);
+
+			std::vector<ALEInterface*>& bunch = lumps[l];
+			std::vector<UsefulData>& bunch_useful = lumps_useful[l];
+			assert(cursor < STEPS);
 			for (int b=0; b<BUNCH; b++) {
 				ALEInterface* emu = bunch[b];
 				UsefulData& data = bunch_useful[b];
-				Action ale_action = action_set[buf_acts.at(l,b,cursor-1)[0]];
+				int32_t a = buf_acts.at(l,b,cursor)[0];
+				assert(a != 0xDEAD);
+				Action ale_action = action_set[a];
 				bool done = false;
 				int  rew = 0;
 				for (int s=0; s<SKIP; s++) {
@@ -247,42 +285,19 @@ void main_loop()
 					data.score += r;
 					done |= emu->game_over();
 					if (done) break;
-					if (s==SKIP-1) emu->getScreenGrayscale(full_res_buf1);
-					if (s==SKIP-2) emu->getScreenGrayscale(full_res_buf2);
+					if (s==SKIP-1) data.picture_stack.render_small(emu, data.picture_stack.small1.data());
+					if (s==SKIP-2) data.picture_stack.render_small(emu, data.picture_stack.small2.data());
 				}
 				bool reset_me = done;
-				if (!done) {
-					resize_05x_grayscale_two_sources(data.picture_stack[data.picture_rot].data(), full_res_buf1.data(), full_res_buf2.data(), H, W);
-					data.picture_rot += 1;
-					data.picture_rot %= STACK;
-					for (int s=0; s<STACK; s++) {
-						int rot = (data.picture_rot + s) % STACK;
-						if (!last) {
-							memcpy(buf_obs0.at(l,b,cursor) + s*W*H, data.picture_stack[rot].data(), W*H);
-						} else {
-							memcpy(last_obs0.at(l,b,0) + s*W*H, data.picture_stack[rot].data(), W*H);
-						}
-					}
-				}
 				int lives = emu->lives();
 				done |= lives < data.lives && lives > 0;
 				bool life_lost = lives < data.lives;
 				if (life_lost) rew = -1;
 				data.lives = lives;
+				buf_rews.at(l,b,cursor)[0] = rew;
 				//if env.__frame >= limit
 
-				if (!last) {
-					buf_rews.at(l,b,cursor)[0] = rew;
-					buf_news.at(l,b,cursor)[0] = done || cursor==0;
-					buf_scor.at(l,b,cursor)[0] = reset_me ? 0 : data.score;
-					buf_step.at(l,b,cursor)[0] = reset_me ? 0 : data.frame;
-				} else {
-					last_rews.at(l,b,0)[0] = rew;
-					last_news.at(l,b,0)[0] = done;
-					last_scor.at(l,b,0)[0] = reset_me ? 0 : data.score;
-					last_step.at(l,b,0)[0] = reset_me ? 0 : data.frame;
-				}
-				if (1 && cpu==0 && b==0 && l==0) {
+				if (0 && cpu==0 && b==0 && l==0) {
 					//fprintf(stderr, "%c", cmd[0]);
 					//fflush(stderr);
 					fprintf(stderr, " %05i frame %06i/%06i lives %i act %i total rew %i done %i\n",
@@ -291,30 +306,44 @@ void main_loop()
 						data.score, done);
 				}
 
-				if (!reset_me) continue;
-				fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf} )\n",
-					data.score, data.frame, time() - t0);
-				fflush(monitor_js);
-				data.frame = 0;
-				data.score = 0;
-				data.lives = 0;
-				emu->reset_game();
-				emu->getScreenGrayscale(full_res_buf1);
-				resize_05x_grayscale(data.picture_stack[0].data(), full_res_buf1.data(), H, W);
-				for (int s=1; s<STACK; s++) {
-					memcpy(data.picture_stack[s].data(), data.picture_stack[0].data(), W*H);
-					memcpy(buf_obs0.at(l,b,cursor) + s*W*H, data.picture_stack[0].data(), W*H);
-				}
-				data.picture_rot = 0;
-				for (int s=0; s<STACK; s++) {
-					int rot = (data.picture_rot + s) % STACK;
-					if (!last) {
-						memcpy(buf_obs0.at(l,b,cursor) + s*W*H, data.picture_stack[rot].data(), W*H);
+				int save = cursor+1;
+				if (!reset_me) {
+					data.picture_stack.rotate_and_max_two_small();
+					if (save < STEPS) {
+						buf_news.at(l,b,save)[0] = done;
+						buf_scor.at(l,b,save)[0] = data.score;
+						buf_step.at(l,b,save)[0] = data.frame;
 					} else {
-						memcpy(last_obs0.at(l,b,0) + s*W*H, data.picture_stack[rot].data(), W*H);
+						last_news.at(l,b,0)[0] = done;
+						last_scor.at(l,b,0)[0] = data.score;
+						last_step.at(l,b,0)[0] = data.frame;
+					}
+				} else {
+					fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf} )\n",
+						data.score, data.frame, time() - t0);
+					fflush(monitor_js);
+					data.frame = 0;
+					data.score = 0;
+					data.lives = 0;
+					emu->reset_game();
+					data.picture_stack.render_small(emu, data.picture_stack.small1.data());
+					data.picture_stack.fill_with_small1();
+					if (save < STEPS) {
+						buf_news.at(l,b,save)[0] = true;
+						buf_scor.at(l,b,save)[0] = data.score;
+						buf_step.at(l,b,save)[0] = data.frame;
+					} else {
+						last_news.at(l,b,0)[0] = true;
+						last_scor.at(l,b,0)[0] = data.score;
+						last_step.at(l,b,0)[0] = data.frame;
 					}
 				}
-				// But keep the rewards, step, score
+
+				if (save < STEPS) {
+					memcpy(buf_obs0.at(l,b,save), data.picture_stack.rot.data(), STACK*W*H);
+				}  else {
+					memcpy(last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
+				}
 			}
 			char buf[1];
 			buf[0] = 'a' + l;
@@ -324,8 +353,11 @@ void main_loop()
 				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (2)\n", cpu);
 				return;
 			}
+
+			l = (l+1) % LUMP;
+			if (l==0)
+			    cursor += 1;
 		}
-		cursor += 1;
 	}
 	fclose(monitor_js);
 	close(fd_c2p_w);
