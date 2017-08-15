@@ -34,12 +34,14 @@ struct FrameStacking {
 	std::vector<uint8_t> small2;
 	uint8_t grayscale_palette[256];
 
-	void init(ALEInterface* ale)
+	void init(ALEInterface* emu)
 	{
 		rot.resize(W*H*STACK);
 		small1.resize(W*H);
 		small2.resize(W*H);
-		ColourPalette& pal = ale->theOSystem->colourPalette();
+		assert(2*W==emu->getScreen().width());
+		assert(2*H==emu->getScreen().height());
+		ColourPalette& pal = emu->theOSystem->colourPalette();
 		uint8_t buf123[256];
 		for (int c=0; c<256; c++) buf123[c] = c;
 		uint8_t rgb[256*3];
@@ -54,12 +56,13 @@ struct FrameStacking {
 	{
 		uint8_t* indexed = ale->getScreen().getArray();
 		for (int y=0; y<H; y++) {
+			int W2 = W*2;
 			for (int x=0; x<W; x++) {
 				dst[y*W+x] =
-					(grayscale_palette[indexed[(y+0)*2*W + 2*(x+0)]]) +
-					(grayscale_palette[indexed[(y+0)*2*W + 2*(x+1)]]) +
-					(grayscale_palette[indexed[(y+1)*2*W + 2*(x+0)]]) +
-					(grayscale_palette[indexed[(y+1)*2*W + 2*(x+1)]]);
+					(grayscale_palette[indexed[y*2*W2+0  + 2*x+0]]) +
+					(grayscale_palette[indexed[y*2*W2+0  + 2*x+1]]) +
+					(grayscale_palette[indexed[y*2*W2+W2 + 2*x+0]]) +
+					(grayscale_palette[indexed[y*2*W2+W2 + 2*x+1]]);
 			}
 		}
 	}
