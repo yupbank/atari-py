@@ -149,10 +149,8 @@ public:
 
 	~MemMap()
 	{
-		if (d)
-			munmap(d, _len);
-		if (fd!=-1)
-			close(fd);
+		if (d) munmap(d, _len);
+		if (fd!=-1) close(fd);
 	}
 
 	T* at(int l, int b, int cursor)
@@ -161,6 +159,52 @@ public:
 	}
 	// shape_with_details    = [LUMP, NENV, STEPS]
 	// NENV = NCPU*BUNCH
+};
+
+class MemMapRGB {
+public:
+	int fd;
+	uint8_t* d;
+
+	MemMapRGB(): fd(-1), d(0)  { }
+
+	void map(const std::string& fn)
+	{
+		fd = open(fn.c_str(), O_RDWR);  // S_IRUSR|S_IWUSR|S_IRGRP);
+		if (fd==-1)
+			throw std::runtime_error(stdprintf("cannot open file '%s': %s", fn.c_str(), strerror(errno)));
+		//int z = ftruncate(fd, FULL_PICTURE_BYTES*3);
+		//if (z!=0)
+		//	throw std::runtime_error(stdprintf("cannot ftruncate file '%s': %s", fn.c_str(), strerror(errno)));
+		d = (uint8_t*) mmap(0, FULL_PICTURE_BYTES*3, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+		if (d==MAP_FAILED) {
+			close(fd);
+			throw std::runtime_error(stdprintf("cannot mmap '%s': %s", fn.c_str(), strerror(errno)));
+		}
+	}
+
+	~MemMapRGB()
+	{
+		if (d) munmap(d, FULL_PICTURE_BYTES*3);
+		if (fd!=-1) close(fd);
+	}
+
+	std::vector<unsigned char> pic1;
+	std::vector<unsigned char> pic2;
+
+	void flush()
+	{
+		if (!d) return;
+		for (int c=0; c<FULL_PICTURE_BYTES*3; c++)
+			d[c] = std::max(pic1[c], pic2[c]);
+	}
+
+	void render(ALEInterface* emu, std::vector<unsigned char>* pic)
+	{
+		if (!d) return;
+		pic->resize(FULL_PICTURE_BYTES*3);
+		emu->getScreenRGB(*pic);
+	}
 };
 
 void main_loop()
@@ -190,6 +234,10 @@ void main_loop()
 	MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH*1);
 	MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH*1);
 
+	MemMapRGB rgb;
+	if (STEPS==1 && NCPU==1 && LUMP==1)
+		rgb.map(prefix + "_RGB");
+
 	std::vector<std::vector<ALEInterface*> > lumps;
 	std::vector<std::vector<UsefulData> > lumps_useful;
 	std::vector<Action> action_set;
@@ -211,6 +259,8 @@ void main_loop()
 			data.picture_stack.init(emu);
 			data.picture_stack.render_small(emu, data.picture_stack.small1.data());
 			data.picture_stack.fill_with_small1();
+			rgb.render(emu, &rgb.pic1);
+			rgb.render(emu, &rgb.pic2);
 			bunch.push_back(emu);
 			bunch_useful.push_back(data);
 		}
@@ -239,6 +289,7 @@ void main_loop()
 			for (int b=0; b<BUNCH; b++) {
 				UsefulData& data = bunch_useful[b];
 				memcpy(buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
+				rgb.flush();
 				buf_vo0.at(l,b,cursor)[0] = 1 - float(data.frame)/limit;
 				buf_news.at(l,b,cursor)[0] = true;
 				buf_step.at(l,b,cursor)[0] = data.frame;
@@ -301,6 +352,8 @@ void main_loop()
 					if (done) break;
 					if (s==SKIP-1) data.picture_stack.render_small(emu, data.picture_stack.small1.data());
 					if (s==SKIP-2) data.picture_stack.render_small(emu, data.picture_stack.small2.data());
+					if (s==SKIP-1) rgb.render(emu, &rgb.pic1);
+					if (s==SKIP-2) rgb.render(emu, &rgb.pic2);
 				}
 				bool reset_me = done;
 				int lives = emu->lives();
@@ -363,6 +416,7 @@ void main_loop()
 					memcpy(last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
 					buf_vo0.at(l,b,0)[0] = 1 - float(data.frame)/limit;
 				}
+				rgb.flush();
 			}
 			char buf[1];
 			buf[0] = 'a' + l;
