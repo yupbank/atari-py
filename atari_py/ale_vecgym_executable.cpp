@@ -32,7 +32,7 @@ struct FrameStacking {
 	std::vector<uint8_t> rot;
 	std::vector<uint8_t> small1;
 	std::vector<uint8_t> small2;
-	uint8_t grayscale_palette[256];
+	uint16_t grayscale_palette[256];
 
 	void init(ALEInterface* emu)
 	{
@@ -48,7 +48,9 @@ struct FrameStacking {
 		pal.applyPaletteRGB(rgb, buf123, 256);
 		for (int c=0; c<256; c++) {
 			float gray = 0.299f*rgb[3*c+0] + 0.587f*rgb[3*c+1] + 0.114f*rgb[3*c+2];
-			grayscale_palette[c] = uint8_t(gray) >> 2; // 25% intensity, not 100%
+			uint16_t gray16 = uint16_t(gray);
+			if (gray16==256) gray16 = 255;
+			grayscale_palette[c] = gray16;
 		}
 	}
 
@@ -58,20 +60,21 @@ struct FrameStacking {
 		for (int y=0; y<H; y++) {
 			int W2 = W*2;
 			for (int x=0; x<W; x++) {
-				dst[y*W+x] =
+				dst[y*W+x] = uint8_t((
 					(grayscale_palette[indexed[y*2*W2+0  + 2*x+0]]) +
 					(grayscale_palette[indexed[y*2*W2+0  + 2*x+1]]) +
 					(grayscale_palette[indexed[y*2*W2+W2 + 2*x+0]]) +
-					(grayscale_palette[indexed[y*2*W2+W2 + 2*x+1]]);
+					(grayscale_palette[indexed[y*2*W2+W2 + 2*x+1]])
+					) >> 2);
 			}
 		}
 	}
 
 	void rotate_and_max_two_small()
 	{
-		memmove(rot.data()+1, rot.data(), rot.size()-1);
+		memmove(rot.data(), rot.data()+1, rot.size()-1);
 		for (int c=0; c<H*W; c++)
-			rot[STACK*c] = std::max(small1[c], small2[c]);
+			rot[STACK*c+(STACK-1)] = std::max(small1[c], small2[c]);
 	}
 
 	void fill_with_small1()
@@ -162,14 +165,20 @@ public:
 
 void main_loop()
 {
-	char buf[1024];
-	snprintf(buf, sizeof(buf), "%i", cpu);
-	FILE* monitor_js = fopen((monitor_dir + stdprintf("/%03i.monitor.json", cpu)).c_str(), "wt");
 	double t0 = time();
-	fprintf(monitor_js, "{\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
-	fflush(monitor_js);
+	FILE* monitor_js = 0;
+	if (!monitor_dir.empty()) {
+		std::string monitor_fn = monitor_dir + stdprintf("/%03i.monitor.json", cpu);
+		//fprintf(stderr, "ale_vecgym_executable cpu%02i monitor: %s\n", cpu, monitor_fn.c_str());
+		monitor_js = fopen(monitor_fn.c_str(), "wt");
+	}
+	if (monitor_js) {
+		fprintf(monitor_js, "{\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
+		fflush(monitor_js);
+	}
 
 	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*STEPS*H*W*STACK);
+	MemMap<float>   buf_vo0( prefix+"_vo0",  LUMP*NCPU*BUNCH*STEPS);
 	MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH*STEPS);
 	MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH*STEPS);
 	MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH*STEPS);
@@ -183,8 +192,6 @@ void main_loop()
 
 	std::vector<std::vector<ALEInterface*> > lumps;
 	std::vector<std::vector<UsefulData> > lumps_useful;
-	std::vector<uint8_t> full_res_buf1(FULL_PICTURE_BYTES);
-	std::vector<uint8_t> full_res_buf2(FULL_PICTURE_BYTES);
 	std::vector<Action> action_set;
 	int cursor = 0;
 	for (int l=0; l<LUMP; l++) {
@@ -193,6 +200,7 @@ void main_loop()
 		for (int b=0; b<BUNCH; b++) {
 			ALEInterface* emu = new ALEInterface();
 			emu->setInt("random_seed", cpu*1000 + b);
+			emu->setFloat("repeat_action_probability", 0);
 			emu->loadROM(rom);
 			action_set = emu->getMinimalActionSet();
 			assert( FULL_PICTURE_BYTES == emu->getScreen().height() * emu->getScreen().width() );
@@ -209,6 +217,7 @@ void main_loop()
 		lumps.push_back(bunch);
 		lumps_useful.push_back(bunch_useful);
 	}
+	//fprintf(stderr, "%s minimal action_set is %i long\n", env_id.c_str(), (int)action_set.size());
 
 	ssize_t r0 = write(fd_c2p_w, "R", 1);
 	assert(r0==1); // pipe must block until it can write, not return errors.
@@ -220,6 +229,7 @@ void main_loop()
 		return;
 	}
 	assert(cmd[0]=='0' && "First command must be goto_buffer_beginning()");
+	const int limit = 10000;
 
 	bool quit = false;
 	while (!quit) {
@@ -229,6 +239,7 @@ void main_loop()
 			for (int b=0; b<BUNCH; b++) {
 				UsefulData& data = bunch_useful[b];
 				memcpy(buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
+				buf_vo0.at(l,b,cursor)[0] = 1 - float(data.frame)/limit;
 				buf_news.at(l,b,cursor)[0] = true;
 				buf_step.at(l,b,cursor)[0] = data.frame;
 				buf_scor.at(l,b,cursor)[0] = data.score;
@@ -298,7 +309,8 @@ void main_loop()
 				if (life_lost) rew = -1;
 				data.lives = lives;
 				buf_rews.at(l,b,cursor)[0] = rew;
-				//if env.__frame >= limit
+				if (data.frame >= limit)
+					reset_me = true;
 
 				if (0 && cpu==0 && b==0 && l==0) {
 					//fprintf(stderr, "%c", cmd[0]);
@@ -322,9 +334,11 @@ void main_loop()
 						last_step.at(l,b,0)[0] = data.frame;
 					}
 				} else {
-					fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf} )\n",
-						data.score, data.frame, time() - t0);
-					fflush(monitor_js);
+					if (monitor_js) {
+						fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf}\n",
+							data.score, data.frame, time() - t0);
+						fflush(monitor_js);
+					}
 					data.frame = 0;
 					data.score = 0;
 					data.lives = 0;
@@ -344,8 +358,10 @@ void main_loop()
 
 				if (save < STEPS) {
 					memcpy(buf_obs0.at(l,b,save), data.picture_stack.rot.data(), STACK*W*H);
+					buf_vo0.at(l,b,save)[0] = 1 - float(data.frame)/limit;
 				}  else {
 					memcpy(last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
+					buf_vo0.at(l,b,0)[0] = 1 - float(data.frame)/limit;
 				}
 			}
 			char buf[1];
@@ -362,7 +378,10 @@ void main_loop()
 			    cursor += 1;
 		}
 	}
-	fclose(monitor_js);
+	if (monitor_js) {
+		fclose(monitor_js);
+		monitor_js = 0;
+	}
 	close(fd_c2p_w);
 	close(fd_p2c_r);
 }
