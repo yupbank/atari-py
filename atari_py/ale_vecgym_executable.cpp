@@ -117,16 +117,18 @@ public:
 	int fd;
 	T* d;
 	int chunk;
+	int steps;
 
-	MemMap(const std::string& fn, int size):
+	MemMap(const std::string& fn, int size, int steps):
 		_len(0),
 		fd(-1),
-		d(0)
+		d(0),
+		steps(steps)
 	{
 		fd = open(fn.c_str(), O_RDWR);
 		if (fd==-1)
 			throw std::runtime_error(stdprintf("cannot open file '%s': %s", fn.c_str(), strerror(errno)));
-		_len = sizeof(T)*size;
+		_len = sizeof(T)*size*steps;
 		int file_on_disk_size = lseek(fd, 0, SEEK_END);
 		if (file_on_disk_size != _len) {
 			close(fd);
@@ -138,13 +140,15 @@ public:
 			close(fd);
 			throw std::runtime_error(stdprintf("cannot mmap '%s': %s", fn.c_str(), strerror(errno)));
 		}
-		if (size % (LUMP*NCPU*BUNCH)) {
+		if (_len % (LUMP*NCPU*BUNCH*steps)) {
 			close(fd);
-			throw std::runtime_error(stdprintf("cannot divide size=%i by LUMP*NCPU*BUNCH*STEPS for '%s'",
-				size,
+			throw std::runtime_error(stdprintf("%s cannot divide _len=%i by LUMP*NCPU*BUNCH*steps=%i for '%s'",
+				fn.c_str(),
+				_len,
+				LUMP*NCPU*BUNCH*steps,
 				fn.c_str()));
 		}
-		chunk = size / (LUMP*NCPU*BUNCH*STEPS);
+		chunk = _len / (LUMP*NCPU*BUNCH*steps*sizeof(T));
 	}
 
 	~MemMap()
@@ -155,7 +159,7 @@ public:
 
 	T* at(int l, int b, int cursor)
 	{
-		return d + chunk*(l*NCPU*BUNCH*STEPS + cpu*BUNCH*STEPS + b*STEPS + cursor);
+		return d + chunk*(l*NCPU*BUNCH*steps + cpu*BUNCH*steps + b*steps + cursor);
 	}
 	// shape_with_details    = [LUMP, NENV, STEPS]
 	// NENV = NCPU*BUNCH
@@ -221,18 +225,18 @@ void main_loop()
 		fflush(monitor_js);
 	}
 
-	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*STEPS*H*W*STACK);
-	MemMap<float>   buf_vo0( prefix+"_vo0",  LUMP*NCPU*BUNCH*STEPS);
-	MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH*STEPS);
-	MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH*STEPS);
-	MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH*STEPS);
-	MemMap<int32_t> buf_step(prefix+"_step", LUMP*NCPU*BUNCH*STEPS);
-	MemMap<float>   buf_scor(prefix+"_scor", LUMP*NCPU*BUNCH*STEPS);
+	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*H*W*STACK, STEPS);
+	MemMap<float>   buf_vo0( prefix+"_vo0",  LUMP*NCPU*BUNCH, STEPS);
+	MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH, STEPS);
+	MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH, STEPS);
+	MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH, STEPS);
+	MemMap<int32_t> buf_step(prefix+"_step", LUMP*NCPU*BUNCH, STEPS);
+	MemMap<float>   buf_scor(prefix+"_scor", LUMP*NCPU*BUNCH, STEPS);
 
-	MemMap<uint8_t> last_obs0(prefix+"_xlast_obs0", LUMP*NCPU*BUNCH*1*H*W*STACK);
-	MemMap<bool>    last_news(prefix+"_xlast_news", LUMP*NCPU*BUNCH*1);
-	MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH*1);
-	MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH*1);
+	MemMap<uint8_t> last_obs0(prefix+"_xlast_obs0", LUMP*NCPU*BUNCH*H*W*STACK, 1);
+	MemMap<bool>    last_news(prefix+"_xlast_news", LUMP*NCPU*BUNCH, 1);
+	MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH, 1);
+	MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH, 1);
 
 	MemMapRGB rgb;
 	if (STEPS==1 && NCPU==1 && LUMP==1)
@@ -279,7 +283,7 @@ void main_loop()
 		return;
 	}
 	assert(cmd[0]=='0' && "First command must be goto_buffer_beginning()");
-	const int limit = 10000;
+	const int limit = 15000;
 
 	bool quit = false;
 	while (!quit) {
