@@ -105,6 +105,7 @@ double time()
 
 struct UsefulData {
 	FrameStacking picture_stack;
+	bool is_new;
 	int lives;
 	int frame;
 	int score;
@@ -116,7 +117,7 @@ class MemMap {
 public:
 	int fd;
 	T* d;
-	int chunk;
+	int one_record_size;
 	int steps;
 
 	MemMap(const std::string& fn, int size, int steps):
@@ -148,7 +149,7 @@ public:
 				LUMP*NCPU*BUNCH*steps,
 				fn.c_str()));
 		}
-		chunk = _len / (LUMP*NCPU*BUNCH*steps*sizeof(T));
+		one_record_size = _len / (LUMP*NCPU*BUNCH*steps*sizeof(T));
 	}
 
 	~MemMap()
@@ -159,10 +160,8 @@ public:
 
 	T* at(int l, int b, int cursor)
 	{
-		return d + chunk*(l*NCPU*BUNCH*steps + cpu*BUNCH*steps + b*steps + cursor);
+		return d + one_record_size*(l*NCPU*BUNCH*steps + cpu*BUNCH*steps + b*steps + cursor);
 	}
-	// shape_with_details    = [LUMP, NENV, STEPS]
-	// NENV = NCPU*BUNCH
 };
 
 class MemMapRGB {
@@ -226,7 +225,7 @@ void main_loop()
 	}
 
 	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*H*W*STACK, STEPS);
-	MemMap<float>   buf_vo0( prefix+"_vo0",  LUMP*NCPU*BUNCH, STEPS);
+	MemMap<float>   buf_obs1(prefix+"_obs1", LUMP*NCPU*BUNCH*2, STEPS);
 	MemMap<int32_t> buf_acts(prefix+"_acts", LUMP*NCPU*BUNCH, STEPS);
 	MemMap<float>   buf_rews(prefix+"_rews", LUMP*NCPU*BUNCH, STEPS);
 	MemMap<bool>    buf_news(prefix+"_news", LUMP*NCPU*BUNCH, STEPS);
@@ -234,6 +233,7 @@ void main_loop()
 	MemMap<float>   buf_scor(prefix+"_scor", LUMP*NCPU*BUNCH, STEPS);
 
 	MemMap<uint8_t> last_obs0(prefix+"_xlast_obs0", LUMP*NCPU*BUNCH*H*W*STACK, 1);
+	MemMap<float>   last_obs1(prefix+"_xlast_obs1", LUMP*NCPU*BUNCH*2, 1);
 	MemMap<bool>    last_news(prefix+"_xlast_news", LUMP*NCPU*BUNCH, 1);
 	MemMap<int32_t> last_step(prefix+"_xlast_step", LUMP*NCPU*BUNCH, 1);
 	MemMap<float>   last_scor(prefix+"_xlast_scor", LUMP*NCPU*BUNCH, 1);
@@ -260,6 +260,7 @@ void main_loop()
 			data.frame = 0;
 			data.score = 0;
 			data.lives = emu->lives();
+			data.is_new = true;
 			data.picture_stack.init(emu);
 			data.picture_stack.render_small(emu, data.picture_stack.small1.data());
 			data.picture_stack.fill_with_small1();
@@ -272,6 +273,7 @@ void main_loop()
 		lumps_useful.push_back(bunch_useful);
 	}
 	//fprintf(stderr, "%s minimal action_set is %i long\n", env_id.c_str(), (int)action_set.size());
+	assert(buf_obs1.one_record_size==2);
 
 	ssize_t r0 = write(fd_c2p_w, "R", 1);
 	assert(r0==1); // pipe must block until it can write, not return errors.
@@ -283,7 +285,7 @@ void main_loop()
 		return;
 	}
 	assert(cmd[0]=='0' && "First command must be goto_buffer_beginning()");
-	const int limit = 15000;
+	const int atari_episode_limit = 30000; // Really high, but there are games this long (Space Invaders need 15000 to get to higher levels).
 
 	bool quit = false;
 	while (!quit) {
@@ -292,10 +294,12 @@ void main_loop()
 			std::vector<UsefulData>& bunch_useful = lumps_useful[l];
 			for (int b=0; b<BUNCH; b++) {
 				UsefulData& data = bunch_useful[b];
-				memcpy(buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
 				rgb.flush();
-				buf_vo0.at(l,b,cursor)[0] = 1 - float(data.frame)/limit;
-				buf_news.at(l,b,cursor)[0] = true;
+				memcpy(
+				buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
+				buf_obs1.at(l,b,cursor)[0] = 1 - float(data.frame)/atari_episode_limit;
+				buf_obs1.at(l,b,cursor)[1] = data.lives;
+				buf_news.at(l,b,cursor)[0] = data.is_new;
 				buf_step.at(l,b,cursor)[0] = data.frame;
 				buf_scor.at(l,b,cursor)[0] = data.score;
 			}
@@ -311,20 +315,15 @@ void main_loop()
 		int l = 0;
 		while (!quit) {
 			char cmd[2];
-			//printf(" * * * * cpu%i rcv!\n", cpu);
 			ssize_t r1 = read(fd_p2c_r, cmd, 1);
-			//printf(" * * * * cpu%i cmd='%c'\n", cpu, cmd[0]);
 			if (r1 != 1) {
-				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (1)\n", cpu);
+				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (3)\n", cpu);
 				return;
 			}
 			if (cmd[0]=='Q') {
 				quit = true;
 				break;
 			}
-			//if (cmd[0] >= 'A' && cmd[0] <= 'H') { // 'H' is 8 lumps supported (ABCDEFGH)
-			//	cursor = 0;
-			//assert(cmd[0]=='A' && "you have synchronization problems"); // but actually, it only makes sense to send 'A' there
 			if (cmd[0] >= 'a' && cmd[0] <= 'h') {
 				assert(cmd[0]==char(97+l) && "you have synchronization problems");
 			} else if (cmd[0] == '0') {
@@ -343,7 +342,6 @@ void main_loop()
 				ALEInterface* emu = bunch[b];
 				UsefulData& data = bunch_useful[b];
 				int32_t a = buf_acts.at(l,b,cursor)[0];
-				assert(a != 0xDEAD);
 				Action ale_action = action_set[a];
 				bool done = false;
 				int  rew = 0;
@@ -360,72 +358,69 @@ void main_loop()
 					if (s==SKIP-2) rgb.render(emu, &rgb.pic2);
 				}
 				bool reset_me = done;
-				int lives = emu->lives();
-				done |= lives < data.lives && lives > 0;
-				bool life_lost = lives < data.lives;
-				if (life_lost) rew = -1;
-				data.lives = lives;
+
+				bool episodic_life = false;
+				if (episodic_life) {
+					int lives = emu->lives();
+					done |= lives < data.lives && lives > 0;
+					bool life_lost = lives < data.lives;
+					if (life_lost) rew = -1;
+				}
+
+				data.lives = emu->lives();
 				buf_rews.at(l,b,cursor)[0] = rew;
-				if (data.frame >= limit)
+
+				if (data.frame >= atari_episode_limit)
 					reset_me = true;
 
 				if (0 && cpu==0 && b==0 && l==0) {
-					//fprintf(stderr, "%c", cmd[0]);
-					//fflush(stderr);
 					fprintf(stderr, " %05i frame %06i/%06i lives %i act %i total rew %i done %i\n",
 						cursor,
-						data.frame, 0, lives, int(ale_action),
+						data.frame, 0, data.lives, int(ale_action),
 						data.score, done);
 				}
 
 				int save = cursor+1;
 				if (!reset_me) {
 					data.picture_stack.rotate_and_max_two_small();
-					if (save < STEPS) {
-						buf_news.at(l,b,save)[0] = done;
-						buf_scor.at(l,b,save)[0] = data.score;
-						buf_step.at(l,b,save)[0] = data.frame;
-					} else {
-						last_news.at(l,b,0)[0] = done;
-						last_scor.at(l,b,0)[0] = data.score;
-						last_step.at(l,b,0)[0] = data.frame;
-					}
 				} else {
 					if (monitor_js) {
 						fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf}\n",
 							data.score, data.frame, time() - t0);
 						fflush(monitor_js);
 					}
+					emu->reset_game();
 					data.frame = 0;
 					data.score = 0;
-					data.lives = 0;
-					emu->reset_game();
+					data.lives = emu->lives();
+					data.is_new = true;
 					data.picture_stack.render_small(emu, data.picture_stack.small1.data());
 					data.picture_stack.fill_with_small1();
-					if (save < STEPS) {
-						buf_news.at(l,b,save)[0] = true;
-						buf_scor.at(l,b,save)[0] = data.score;
-						buf_step.at(l,b,save)[0] = data.frame;
-					} else {
-						last_news.at(l,b,0)[0] = true;
-						last_scor.at(l,b,0)[0] = data.score;
-						last_step.at(l,b,0)[0] = data.frame;
-					}
 				}
 
 				if (save < STEPS) {
-					memcpy(buf_obs0.at(l,b,save), data.picture_stack.rot.data(), STACK*W*H);
-					buf_vo0.at(l,b,save)[0] = 1 - float(data.frame)/limit;
-				}  else {
-					memcpy(last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
-					buf_vo0.at(l,b,0)[0] = 1 - float(data.frame)/limit;
+					memcpy(
+					buf_obs0.at(l,b,save), data.picture_stack.rot.data(), STACK*W*H);
+					buf_obs1.at(l,b,save)[0] = 1 - float(data.frame)/atari_episode_limit;
+					buf_obs1.at(l,b,save)[1] = data.lives;
+					buf_news.at(l,b,save)[0] = data.is_new;
+					buf_step.at(l,b,save)[0] = data.frame;
+					buf_scor.at(l,b,save)[0] = data.score;
+				} else {
+					memcpy(
+					last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
+					last_obs1.at(l,b,0)[0] = 1 - float(data.frame)/atari_episode_limit;
+					last_obs1.at(l,b,0)[1] = data.lives;
+					last_news.at(l,b,0)[0] = data.is_new;
+					last_step.at(l,b,0)[0] = data.frame;
+					last_scor.at(l,b,0)[0] = data.score;
 				}
 				rgb.flush();
 			}
+
 			char buf[1];
 			buf[0] = 'a' + l;
 			ssize_t r2 = write(fd_c2p_w, buf, 1);
-			//printf(" * * * * cpu%i SENT\n", cpu);
 			if (r2 != 1) {
 				fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (2)\n", cpu);
 				return;
@@ -436,6 +431,7 @@ void main_loop()
 			    cursor += 1;
 		}
 	}
+
 	if (monitor_js) {
 		fclose(monitor_js);
 		monitor_js = 0;
