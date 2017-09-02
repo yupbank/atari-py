@@ -288,6 +288,7 @@ void main_loop()
 	const int atari_episode_limit = 30000; // Really high, but there are games this long (Space Invaders need 15000 to get to higher levels).
 
 	bool quit = false;
+	float max_lives = 5.0f;
 	while (!quit) {
 		assert(cursor==0);
 		for (int l=0; l<LUMP; l++) {
@@ -298,7 +299,7 @@ void main_loop()
 				memcpy(
 				buf_obs0.at(l,b,cursor), data.picture_stack.rot.data(), STACK*W*H);
 				buf_obs1.at(l,b,cursor)[0] = 1 - float(data.frame)/atari_episode_limit;
-				buf_obs1.at(l,b,cursor)[1] = data.lives;
+				buf_obs1.at(l,b,cursor)[1] = data.lives / max_lives;
 				buf_news.at(l,b,cursor)[0] = data.is_new;
 				buf_step.at(l,b,cursor)[0] = data.frame;
 				buf_scor.at(l,b,cursor)[0] = data.score;
@@ -359,7 +360,7 @@ void main_loop()
 				}
 				bool reset_me = done;
 
-				bool episodic_life = false;
+				bool episodic_life = true;
 				if (episodic_life) {
 					int lives = emu->lives();
 					done |= lives < data.lives && lives > 0;
@@ -383,6 +384,7 @@ void main_loop()
 				int save = cursor+1;
 				if (!reset_me) {
 					data.picture_stack.rotate_and_max_two_small();
+					data.is_new = false;
 				} else {
 					if (monitor_js) {
 						fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf}\n",
@@ -402,7 +404,7 @@ void main_loop()
 					memcpy(
 					buf_obs0.at(l,b,save), data.picture_stack.rot.data(), STACK*W*H);
 					buf_obs1.at(l,b,save)[0] = 1 - float(data.frame)/atari_episode_limit;
-					buf_obs1.at(l,b,save)[1] = data.lives;
+					buf_obs1.at(l,b,save)[1] = data.lives / max_lives;
 					buf_news.at(l,b,save)[0] = data.is_new;
 					buf_step.at(l,b,save)[0] = data.frame;
 					buf_scor.at(l,b,save)[0] = data.score;
@@ -410,7 +412,7 @@ void main_loop()
 					memcpy(
 					last_obs0.at(l,b,0), data.picture_stack.rot.data(), STACK*W*H);
 					last_obs1.at(l,b,0)[0] = 1 - float(data.frame)/atari_episode_limit;
-					last_obs1.at(l,b,0)[1] = data.lives;
+					last_obs1.at(l,b,0)[1] = data.lives / max_lives;
 					last_news.at(l,b,0)[0] = data.is_new;
 					last_step.at(l,b,0)[0] = data.frame;
 					last_scor.at(l,b,0)[0] = data.score;
