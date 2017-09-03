@@ -113,11 +113,11 @@ struct UsefulData {
 
 template<class T>
 class MemMap {
-	int _len;
+	size_t _len;
 public:
 	int fd;
 	T* d;
-	int one_record_size;
+	size_t one_record_size;
 	int steps;
 
 	MemMap(const std::string& fn, int size, int steps):
@@ -129,25 +129,17 @@ public:
 		fd = open(fn.c_str(), O_RDWR);
 		if (fd==-1)
 			throw std::runtime_error(stdprintf("cannot open file '%s': %s", fn.c_str(), strerror(errno)));
-		_len = sizeof(T)*size*steps;
-		int file_on_disk_size = lseek(fd, 0, SEEK_END);
+		_len = sizeof(T)*size_t(size)*size_t(steps);
+		size_t file_on_disk_size = lseek(fd, 0, SEEK_END);
 		if (file_on_disk_size != _len) {
 			close(fd);
-			throw std::runtime_error(stdprintf("file on disk '%s' has size %i, but expected size is %i",
+			throw std::runtime_error(stdprintf("file on disk '%s' has size %zu, but expected size is %zu",
 				fn.c_str(), file_on_disk_size, _len) );
 		}
 		d = (T*) mmap(0, _len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
 		if (d==MAP_FAILED) {
 			close(fd);
 			throw std::runtime_error(stdprintf("cannot mmap '%s': %s", fn.c_str(), strerror(errno)));
-		}
-		if (_len % (LUMP*NCPU*BUNCH*steps)) {
-			close(fd);
-			throw std::runtime_error(stdprintf("%s cannot divide _len=%i by LUMP*NCPU*BUNCH*steps=%i for '%s'",
-				fn.c_str(),
-				_len,
-				LUMP*NCPU*BUNCH*steps,
-				fn.c_str()));
 		}
 		one_record_size = _len / (LUMP*NCPU*BUNCH*steps*sizeof(T));
 	}
@@ -360,7 +352,7 @@ void main_loop()
 				}
 				bool reset_me = done;
 
-				bool episodic_life = true;
+				bool episodic_life = false;
 				if (episodic_life) {
 					int lives = emu->lives();
 					done |= lives < data.lives && lives > 0;
