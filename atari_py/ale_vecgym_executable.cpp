@@ -207,12 +207,13 @@ void main_loop()
 	double t0 = time();
 	FILE* monitor_js = 0;
 	if (!monitor_dir.empty()) {
-		std::string monitor_fn = monitor_dir + stdprintf("/%03i.monitor.json", cpu);
+		std::string monitor_fn = monitor_dir + stdprintf("/%03i.monitor.csv", cpu);
 		//fprintf(stderr, "ale_vecgym_executable cpu%02i monitor: %s\n", cpu, monitor_fn.c_str());
 		monitor_js = fopen(monitor_fn.c_str(), "wt");
 	}
 	if (monitor_js) {
-		fprintf(monitor_js, "{\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
+		fprintf(monitor_js, "# {\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
+		fprintf(monitor_js, "r,l,t\n");
 		fflush(monitor_js);
 	}
 
@@ -379,7 +380,7 @@ void main_loop()
 					data.is_new = false;
 				} else {
 					if (monitor_js) {
-						fprintf(monitor_js, "{\"r\": %i, \"l\": %i, \"t\": %0.2lf}\n",
+						fprintf(monitor_js, "%i,%i,%0.2lf\n",
 							data.score, data.frame, time() - t0);
 						fflush(monitor_js);
 					}
