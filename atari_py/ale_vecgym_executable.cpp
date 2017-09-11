@@ -205,16 +205,16 @@ public:
 void main_loop()
 {
 	double t0 = time();
-	FILE* monitor_js = 0;
+	FILE* monitor_csv = 0;
 	if (!monitor_dir.empty()) {
 		std::string monitor_fn = monitor_dir + stdprintf("/%03i.monitor.csv", cpu);
 		//fprintf(stderr, "ale_vecgym_executable cpu%02i monitor: %s\n", cpu, monitor_fn.c_str());
-		monitor_js = fopen(monitor_fn.c_str(), "wt");
+		monitor_csv = fopen(monitor_fn.c_str(), "wt");
 	}
-	if (monitor_js) {
-		fprintf(monitor_js, "# {\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
-		fprintf(monitor_js, "r,l,t\n");
-		fflush(monitor_js);
+	if (monitor_csv) {
+		fprintf(monitor_csv, "# {\"t_start\": %0.2lf, \"gym_version\": \"vecgym\", \"env_id\": \"%s\"}\n", t0, env_id.c_str());
+		fprintf(monitor_csv, "r,l,t\n");
+		fflush(monitor_csv);
 	}
 
 	MemMap<uint8_t> buf_obs0(prefix+"_obs0", LUMP*NCPU*BUNCH*H*W*STACK, STEPS);
@@ -277,6 +277,7 @@ void main_loop()
 		fprintf(stderr, "ale_vecgym_executable cpu%02i quit because of closed pipe (1)\n", cpu);
 		return;
 	}
+	if (cmd[0]=='Q') return;
 	assert(cmd[0]=='0' && "First command must be goto_buffer_beginning()");
 	const int atari_episode_limit = 30000; // Really high, but there are games this long (Space Invaders need 15000 to get to higher levels).
 
@@ -379,10 +380,10 @@ void main_loop()
 					data.picture_stack.rotate_and_max_two_small();
 					data.is_new = false;
 				} else {
-					if (monitor_js) {
-						fprintf(monitor_js, "%i,%i,%0.2lf\n",
+					if (monitor_csv) {
+						fprintf(monitor_csv, "%i,%i,%0.2lf\n",
 							data.score, data.frame, time() - t0);
-						fflush(monitor_js);
+						fflush(monitor_csv);
 					}
 					emu->reset_game();
 					data.frame = 0;
@@ -427,9 +428,9 @@ void main_loop()
 		}
 	}
 
-	if (monitor_js) {
-		fclose(monitor_js);
-		monitor_js = 0;
+	if (monitor_csv) {
+		fclose(monitor_csv);
+		monitor_csv = 0;
 	}
 	close(fd_c2p_w);
 	close(fd_p2c_r);
