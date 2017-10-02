@@ -207,7 +207,14 @@ void main_loop()
 	double t0 = time();
 	FILE* monitor_csv = 0;
 	if (!monitor_dir.empty()) {
-		std::string monitor_fn = monitor_dir + stdprintf("/%03i.monitor.csv", cpu);
+		std::string monitor_fn;
+		char* rank_ch = getenv("PMI_RANK");
+		if (rank_ch) {
+			int rank = atoi(rank_ch);
+			monitor_fn = monitor_dir + stdprintf("/r%02ip%02i.monitor.csv", rank, cpu);
+		} else {
+			monitor_fn = monitor_dir + stdprintf("/%03i.monitor.csv", cpu);
+		}
 		//fprintf(stderr, "ale_vecgym_executable cpu%02i monitor: %s\n", cpu, monitor_fn.c_str());
 		monitor_csv = fopen(monitor_fn.c_str(), "wt");
 	}
@@ -454,7 +461,9 @@ int main(int argc, char** argv)
 	BUNCH   = atoi(argv[8]);
 	STEPS   = atoi(argv[9]);
 	SKIP    = atoi(argv[10]);
+	assert(SKIP>=2 && SKIP<=10);
 	STACK   = atoi(argv[11]);
+	assert(STACK>=1 && STACK<=10);
 	fd_p2c_r   = atoi(argv[12]);
 	fd_c2p_w   = atoi(argv[13]);
 	if (0) {
