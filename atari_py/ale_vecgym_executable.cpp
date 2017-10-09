@@ -389,7 +389,7 @@ void main_loop()
 				} else {
 					if (monitor_csv) {
 						fprintf(monitor_csv, "%i,%i,%0.2lf\n",
-							data.score, data.frame, time() - t0);
+							data.score, data.frame / SKIP, time() - t0);
 						fflush(monitor_csv);
 					}
 					emu->reset_game();
