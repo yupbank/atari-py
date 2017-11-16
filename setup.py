@@ -10,6 +10,7 @@ with open(os.path.join(os.path.dirname(__file__), 'atari_py/package_data.txt')) 
 
 class Build(DistutilsBuild):
     def run(self):
+        subprocess.check_all(['pip' 'install', 'cmake'])
         cores_to_use = max(1, multiprocessing.cpu_count() - 1)
         cmd = ['make', 'build', '-C', 'atari_py/ale_interface', '-j', str(cores_to_use)]
         try:
