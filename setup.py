@@ -10,6 +10,12 @@ with open(os.path.join(os.path.dirname(__file__), 'atari_py/package_data.txt')) 
 
 class Build(DistutilsBuild):
     def run(self):
+        try:
+            subprocess.check_all(['pip' 'install', 'cmake'])
+            subprocess.check_all(['cmake', '--version'])
+        except Exception as e:
+            sys.stderr.write("unable to use cmake %s"%e)
+
         cores_to_use = max(1, multiprocessing.cpu_count() - 1)
         cmd = ['make', 'build', '-C', 'atari_py/ale_interface', '-j', str(cores_to_use)]
         try:
@@ -23,7 +29,7 @@ class Build(DistutilsBuild):
         DistutilsBuild.run(self)
 
 setup(name='atari-py',
-      version='0.1.1',
+      version='0.1.2',
       description='Python bindings to Atari games',
       url='https://github.com/openai/atari-py',
       author='OpenAI',
@@ -32,6 +38,6 @@ setup(name='atari-py',
       packages=['atari_py'],
       package_data={'atari_py': package_data},
       cmdclass={'build': Build},
-      install_requires=['numpy', 'six'],
+      install_requires=['numpy', 'six', 'cmake'],
       tests_require=['nose2']
 )
